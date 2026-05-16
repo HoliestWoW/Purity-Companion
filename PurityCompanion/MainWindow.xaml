@@ -129,6 +129,7 @@
                     <TextBlock Text="SETTINGS" Foreground="#FFFFFF" FontSize="11" FontWeight="Bold" Margin="0,0,0,10"/>
                     <CheckBox x:Name="TrayCheckBox" Content="Minimize to system tray on close" Foreground="#CCCCCC" Margin="0,0,0,8" Click="Setting_Changed"/>
                     <CheckBox x:Name="NotifyCheckBox" Content="Show desktop notifications for uploads" Foreground="#CCCCCC" Margin="0,0,0,15" Click="Setting_Changed"/>
+                    <Button Content="Change WoW Folder Location" Click="ChangeWowPathButton_Click" Margin="0,15,0,0" Padding="8,4" Background="#333333" Foreground="#f1e9d2" BorderBrush="#4a2d0f"/>
                     <Button Content="Log Out (Forget Battle.net Account)" Height="30" Background="#8B0000" Style="{StaticResource DarkModernButton}" Click="LogoutButton_Click"/>
                 </StackPanel>
             </Border>

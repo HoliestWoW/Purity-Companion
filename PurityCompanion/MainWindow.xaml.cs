@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using System.Linq; // Added for sorting addon files cleanly
 
 using Application = System.Windows.Application;
 
@@ -19,7 +20,7 @@ namespace PurityCompanion
     {
         private readonly string ClientId = "c045bac65c9f45f19d3d65e62c0b1b4f";
         private readonly string PythonServerUrl = "https://purity.pythonanywhere.com";
-        private readonly string CurrentAppVersion = "1.1.2";
+        private readonly string CurrentAppVersion = "1.1.3";
 
         private string? CurrentSessionId;
         private string? VerifiedBattleTag;
@@ -34,12 +35,92 @@ namespace PurityCompanion
         private bool showNotifications = true;
         private DateTime lastEventTime = DateTime.MinValue;
         private string lastEventPath = "";
+        private string CustomWowPath = "";
 
         public MainWindow()
         {
             InitializeComponent();
             SetupSystemTray();
             LoadSettings();
+        }
+
+        private string? ResolveWowAccountPath(string selectedPath)
+        {
+            // Case 1: They literally clicked the "Account" folder
+            if (selectedPath.EndsWith("Account", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Directory.Exists(selectedPath)) return selectedPath;
+            }
+
+            // Case 2: They clicked the "WTF" folder
+            if (selectedPath.EndsWith("WTF", StringComparison.OrdinalIgnoreCase))
+            {
+                string testPath = Path.Combine(selectedPath, "Account");
+                if (Directory.Exists(testPath)) return testPath;
+            }
+
+            // Case 3: They clicked the "_classic_era_" folder
+            if (selectedPath.EndsWith("_classic_era_", StringComparison.OrdinalIgnoreCase))
+            {
+                string testPath = Path.Combine(selectedPath, "WTF", "Account");
+                if (Directory.Exists(testPath)) return testPath;
+            }
+
+            // Case 4: They clicked the base "World of Warcraft" folder
+            if (selectedPath.EndsWith("World of Warcraft", StringComparison.OrdinalIgnoreCase) ||
+                selectedPath.EndsWith("WoW", StringComparison.OrdinalIgnoreCase))
+            {
+                string testPath = Path.Combine(selectedPath, "_classic_era_", "WTF", "Account");
+                if (Directory.Exists(testPath)) return testPath;
+            }
+
+            // Case 5: Catch-all fallback (Just check if the whole path exists inside whatever random folder they clicked)
+            string fallbackPath = Path.Combine(selectedPath, "_classic_era_", "WTF", "Account");
+            if (Directory.Exists(fallbackPath)) return fallbackPath;
+
+            return null; // The folder they selected doesn't contain a Classic Era installation
+        }
+
+        private void PromptForWowFolder(string popupMessage = "WoW not found on C:\\ drive. Please select your World of Warcraft folder.")
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
+                {
+                    dialog.Description = popupMessage;
+                    dialog.ShowNewFolderButton = false;
+
+                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+                    {
+                        // Send their choice to the smart resolver
+                        string? resolvedPath = ResolveWowAccountPath(dialog.SelectedPath);
+
+                        if (resolvedPath != null)
+                        {
+                            CustomWowPath = resolvedPath;
+                            SaveSettings();
+                            PostLogEvent($"WoW path successfully mapped to: {CustomWowPath}", System.Windows.Media.Colors.LimeGreen);
+
+                            // Boot up the watcher now that we have the right path!
+                            InitializeLiveBackgroundWatcher();
+                        }
+                        else
+                        {
+                            System.Windows.MessageBox.Show("Could not find a Classic Era installation inside the folder you selected. Please try again.", "Invalid Folder", MessageBoxButton.OK, MessageBoxImage.Error);
+                            PostLogEvent("⚠️ Failed to map WoW folder. Syncing disabled.", System.Windows.Media.Colors.Red, true);
+                        }
+                    }
+                    else
+                    {
+                        PostLogEvent("⚠️ Folder selection canceled. Syncing disabled.", System.Windows.Media.Colors.Red, true);
+                    }
+                }
+            });
+        }
+        private void ChangeWowPathButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Force the prompt to open with a custom, manual-click message
+            PromptForWowFolder("Manual Override: Please select your World of Warcraft folder location.");
         }
 
         // --- 1. PREMIUM LOGGING ENGINE ---
@@ -69,13 +150,15 @@ namespace PurityCompanion
                 }
             });
         }
+
         private string GetAddonIntegrityHash()
         {
             try
             {
-                // Dynamically find the AddOns folder based on the hardcoded WTF path
-                string defaultWowPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
-                string wowBaseFolder = Directory.GetParent(defaultWowPath)?.Parent?.FullName ?? "";
+                // Fixed Return Type Constraint Fix:
+                if (string.IsNullOrEmpty(CustomWowPath) || !Directory.Exists(CustomWowPath)) return "FOLDER_MISSING";
+
+                string wowBaseFolder = Directory.GetParent(CustomWowPath)?.Parent?.FullName ?? "";
                 string addonDir = Path.Combine(wowBaseFolder, "Interface", "AddOns", "Purity");
 
                 if (!Directory.Exists(addonDir)) return "FOLDER_MISSING";
@@ -110,6 +193,7 @@ namespace PurityCompanion
                 return "ERROR";
             }
         }
+
         private async Task CheckForUpdates()
         {
             try
@@ -176,17 +260,11 @@ namespace PurityCompanion
 
             try
             {
-                // 1. Get the icon from the app's internal resources
-                // Ensure "app_icon.ico" matches your filename EXACTLY (case sensitive!)
                 var iconStream = Application.GetResourceStream(new Uri("pack://application:,,,/PurityCompanion;component/PurityIcon.ico")).Stream;
-
-                // 2. Assign it to the tray
                 trayIcon.Icon = new System.Drawing.Icon(iconStream);
             }
             catch (Exception ex)
             {
-                // If this hits, the Shield shows up. 
-                // We log the error to the console so you can see WHY it failed.
                 Debug.WriteLine("Tray Icon Error: " + ex.Message);
                 trayIcon.Icon = System.Drawing.SystemIcons.Shield;
             }
@@ -194,7 +272,6 @@ namespace PurityCompanion
             trayIcon.Text = "Purity Companion";
             trayIcon.Visible = true;
 
-            // --- REST OF YOUR CODE (DoubleClick/Menu) ---
             trayIcon.DoubleClick += (s, args) => { this.Show(); this.WindowState = WindowState.Normal; };
             trayIcon.ContextMenuStrip = new System.Windows.Forms.ContextMenuStrip();
             trayIcon.ContextMenuStrip.Items.Add("Open Companion", null, (s, args) => { this.Show(); this.WindowState = WindowState.Normal; });
@@ -254,6 +331,10 @@ namespace PurityCompanion
                     bool.TryParse(lines[0], out minimizeToTray);
                     bool.TryParse(lines[1], out showNotifications);
                 }
+                if (lines.Length >= 3 && Directory.Exists(lines[2]))
+                {
+                    CustomWowPath = lines[2];
+                }
             }
             TrayCheckBox.IsChecked = minimizeToTray;
             NotifyCheckBox.IsChecked = showNotifications;
@@ -263,14 +344,35 @@ namespace PurityCompanion
         private void SaveSettings()
         {
             string settingsFile = Path.Combine(GetAppDataFolder(), "settings.txt");
-            File.WriteAllLines(settingsFile, new[] { minimizeToTray.ToString(), showNotifications.ToString() });
+            File.WriteAllLines(settingsFile, new[] { minimizeToTray.ToString(), showNotifications.ToString(), CustomWowPath });
         }
 
         // --- 3. PERSISTENT LOGIN & STARTUP ---
         private async void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            // --- RUN THE UPDATE CHECK FIRST ---
             await CheckForUpdates();
+
+            // --- FIXED: ROUTED UNBOUND STARTER SEQUENCES TO WINDOW_LOADED CONTEXT ---
+            string defaultCPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
+
+            if (string.IsNullOrEmpty(CustomWowPath))
+            {
+                if (Directory.Exists(defaultCPath))
+                {
+                    CustomWowPath = defaultCPath;
+                    SaveSettings();
+                    PostLogEvent("Found default WoW installation on C:\\ drive.", System.Windows.Media.Colors.Gray, false);
+                }
+                else
+                {
+                    PromptForWowFolder();
+                }
+            }
+            else if (!Directory.Exists(CustomWowPath))
+            {
+                PostLogEvent("⚠️ Saved WoW folder is missing. Requesting new location.", System.Windows.Media.Colors.Yellow, true);
+                PromptForWowFolder();
+            }
 
             string authFile = Path.Combine(GetAppDataFolder(), "auth.txt");
             if (File.Exists(authFile))
@@ -301,17 +403,12 @@ namespace PurityCompanion
         private async Task ExecuteHeartbeatTransaction()
         {
             if (string.IsNullOrEmpty(VerifiedBattleTag)) return;
-
-            string defaultWowPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
-            if (!Directory.Exists(defaultWowPath)) return;
+            if (string.IsNullOrEmpty(CustomWowPath) || !Directory.Exists(CustomWowPath)) return;
 
             try
             {
-                // --- THE LIVE TELEMETRY CHECK ---
-                // Check if WoW is actually running on this computer right now
                 bool isWowRunning = Process.GetProcessesByName("WowClassic").Length > 0;
-
-                string[] charFiles = Directory.GetFiles(defaultWowPath, "Purity.lua", SearchOption.AllDirectories);
+                string[] charFiles = Directory.GetFiles(CustomWowPath, "Purity.lua", SearchOption.AllDirectories);
 
                 foreach (string file in charFiles)
                 {
@@ -350,8 +447,8 @@ namespace PurityCompanion
                             sequence_id = sequenceId,
                             total_played = totalPlayed,
                             is_playing = isWowRunning,
-                            level = currentLevel, // NEW
-                            challenge_type = challengeType, // NEW
+                            level = currentLevel,
+                            challenge_type = challengeType,
                             integrityHash = GetAddonIntegrityHash()
                         };
 
@@ -362,17 +459,16 @@ namespace PurityCompanion
 
                         if (response.IsSuccessStatusCode)
                         {
-                            // Optional: Only log to the UI if WoW is actually running so it doesn't spam them when offline
                             if (isWowRunning)
                             {
                                 PostLogEvent($"Active Telemetry Synced: {charName} (Seq: {sequenceId})", System.Windows.Media.Colors.SpringGreen, false);
                             }
                         }
-                        else if (response.StatusCode == System.Net.HttpStatusCode.Conflict) // 409 Conflict (Quarantine)
+                        else if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
                         {
                             PostLogEvent($"⏳ Sync Delay on {charName}: Older file detected. Waiting for Cloud Drive to update...", System.Windows.Media.Colors.Yellow, false);
                         }
-                        else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden) // 403 Forbidden (Blocked)
+                        else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
                         {
                             PostLogEvent($"⛔ Server Rejected {charName}: Character is permanently blocked.", System.Windows.Media.Colors.Red, false);
                         }
@@ -469,13 +565,11 @@ namespace PurityCompanion
         // --- 5. AUTOMATED LIVE SURVEILLANCE & ANTI-CHEAT ---
         private void InitializeLiveBackgroundWatcher()
         {
-            string defaultWowPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
-            if (!Directory.Exists(defaultWowPath)) return;
-
+            if (string.IsNullOrEmpty(CustomWowPath) || !Directory.Exists(CustomWowPath)) return;
             if (wowWatcher != null) return;
 
             wowWatcher = new FileSystemWatcher();
-            wowWatcher.Path = defaultWowPath;
+            wowWatcher.Path = CustomWowPath;
             wowWatcher.Filter = "Purity.lua";
             wowWatcher.IncludeSubdirectories = true;
             wowWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
@@ -488,18 +582,14 @@ namespace PurityCompanion
 
         private void OnWowFileChanged(object sender, FileSystemEventArgs e)
         {
-            // HIGH-PERFORMANCE DEBOUNCE LOOP:
-            // Intercepts and terminates duplicate OS filesystem bursts firing within 2000ms of each other.
             if (e.FullPath == lastEventPath && (DateTime.Now - lastEventTime).TotalSeconds < 2.0)
             {
-                return; // Duplicate system spike detected, drop it quietly
+                return;
             }
 
-            // Lock in current transaction metrics
             lastEventPath = e.FullPath;
             lastEventTime = DateTime.Now;
 
-            // Route back to the WPF UI thread for execution
             Application.Current.Dispatcher.Invoke(async () =>
             {
                 string[] pathParts = e.FullPath.Split(Path.DirectorySeparatorChar);
@@ -521,7 +611,6 @@ namespace PurityCompanion
 
                 if (string.IsNullOrEmpty(fileContent)) return;
 
-                // Anti-Cheat Interceptor Check
                 if (Regex.IsMatch(fileContent, @"\[""status""\]\s*=\s*""Failed"""))
                 {
                     Match reasonMatch = Regex.Match(fileContent, @"\[""failureReason""\]\s*=\s*""([^""]+)""");
@@ -532,7 +621,6 @@ namespace PurityCompanion
                     return;
                 }
 
-                // Secure Leaderboard Completion Handler
                 string scanResult = await ScanAndUploadPendingRun(fileContent);
 
                 if (scanResult == "success")
@@ -555,7 +643,7 @@ namespace PurityCompanion
         {
             try
             {
-                Match match = Regex.Match(fileContent, @"\[""PendingLeaderboardUpload""\]\s*=\s*""([^""]+)""");
+                Match match = Regex.Match(fileContent, @"\[""PendingLeaderboardUpload""\]\s*=\s*""([^""']+)""");
                 if (match.Success)
                 {
                     string verificationString = match.Groups[1].Value;
@@ -596,7 +684,6 @@ namespace PurityCompanion
                 };
 
                 var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-                // Calling your infrastructure anti-rollback ledger tracking framework path
                 HttpResponseMessage response = await httpClient.PostAsync($"{PythonServerUrl}/report_failure", content);
 
                 if (response.IsSuccessStatusCode)
@@ -619,17 +706,18 @@ namespace PurityCompanion
                 AutomateSyncButton.Content = "Scanning & Syncing...";
                 AutomateSyncButton.IsEnabled = false;
 
-                string defaultWowPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
-                if (!Directory.Exists(defaultWowPath))
+                // Syntax Error Condition Fixed:
+                if (string.IsNullOrEmpty(CustomWowPath) || !Directory.Exists(CustomWowPath))
                 {
                     System.Windows.MessageBox.Show("Could not automatically locate World of Warcraft.", "Auto-Discovery Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    ResetSyncButton(); return;
+                    ResetSyncButton();
+                    return;
                 }
 
                 string? cloudFolder = DetermineCloudPath();
                 if (string.IsNullOrEmpty(cloudFolder)) { ResetSyncButton(); return; }
 
-                string[] accountFolders = Directory.GetDirectories(defaultWowPath);
+                string[] accountFolders = Directory.GetDirectories(CustomWowPath);
                 foreach (string accountFolder in accountFolders)
                 {
                     string accountName = new DirectoryInfo(accountFolder).Name;
