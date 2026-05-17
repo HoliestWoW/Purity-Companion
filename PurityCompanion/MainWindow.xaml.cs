@@ -20,7 +20,7 @@ namespace PurityCompanion
     {
         private readonly string ClientId = "c045bac65c9f45f19d3d65e62c0b1b4f";
         private readonly string PythonServerUrl = "https://purity.pythonanywhere.com";
-        private readonly string CurrentAppVersion = "1.1.3";
+        private readonly string CurrentAppVersion = "1.1.4";
 
         private string? CurrentSessionId;
         private string? VerifiedBattleTag;
@@ -74,11 +74,11 @@ namespace PurityCompanion
                 if (Directory.Exists(testPath)) return testPath;
             }
 
-            // Case 5: Catch-all fallback (Just check if the whole path exists inside whatever random folder they clicked)
+            // Case 5: Catch-all fallback
             string fallbackPath = Path.Combine(selectedPath, "_classic_era_", "WTF", "Account");
             if (Directory.Exists(fallbackPath)) return fallbackPath;
 
-            return null; // The folder they selected doesn't contain a Classic Era installation
+            return null;
         }
 
         private void PromptForWowFolder(string popupMessage = "WoW not found on C:\\ drive. Please select your World of Warcraft folder.")
@@ -92,7 +92,6 @@ namespace PurityCompanion
 
                     if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
                     {
-                        // Send their choice to the smart resolver
                         string? resolvedPath = ResolveWowAccountPath(dialog.SelectedPath);
 
                         if (resolvedPath != null)
@@ -100,8 +99,6 @@ namespace PurityCompanion
                             CustomWowPath = resolvedPath;
                             SaveSettings();
                             PostLogEvent($"WoW path successfully mapped to: {CustomWowPath}", System.Windows.Media.Colors.LimeGreen);
-
-                            // Boot up the watcher now that we have the right path!
                             InitializeLiveBackgroundWatcher();
                         }
                         else
@@ -117,20 +114,19 @@ namespace PurityCompanion
                 }
             });
         }
+
         private void ChangeWowPathButton_Click(object sender, RoutedEventArgs e)
         {
-            // Force the prompt to open with a custom, manual-click message
             PromptForWowFolder("Manual Override: Please select your World of Warcraft folder location.");
         }
 
         // --- 1. PREMIUM LOGGING ENGINE ---
         private void PostLogEvent(string description, System.Windows.Media.Color displayColor, bool useNotificationBanner = true)
         {
-            // Ensure we are on the UI thread
             Application.Current.Dispatcher.Invoke(() =>
             {
                 string timestamp = DateTime.Now.ToString("HH:mm:ss");
-                LogHistoryText.AppendText($"[{timestamp}] {description}\r\n"); // Use AppendText for TextBox
+                LogHistoryText.AppendText($"[{timestamp}] {description}\r\n");
                 LogHistoryText.ScrollToEnd();
 
                 if (useNotificationBanner)
@@ -155,7 +151,6 @@ namespace PurityCompanion
         {
             try
             {
-                // Fixed Return Type Constraint Fix:
                 if (string.IsNullOrEmpty(CustomWowPath) || !Directory.Exists(CustomWowPath)) return "FOLDER_MISSING";
 
                 string wowBaseFolder = Directory.GetParent(CustomWowPath)?.Parent?.FullName ?? "";
@@ -163,7 +158,6 @@ namespace PurityCompanion
 
                 if (!Directory.Exists(addonDir)) return "FOLDER_MISSING";
 
-                // Grab all your class/global logic files and sort them alphabetically
                 var files = Directory.GetFiles(addonDir, "*.lua").OrderBy(f => f).ToList();
 
                 using (var sha256 = System.Security.Cryptography.SHA256.Create())
@@ -171,7 +165,6 @@ namespace PurityCompanion
                     byte[] combinedHash = new byte[32];
                     foreach (var file in files)
                     {
-                        // FileShare.ReadWrite prevents crashes if WoW is actively reading the file
                         using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                         {
                             byte[] fileHash = sha256.ComputeHash(stream);
@@ -179,12 +172,7 @@ namespace PurityCompanion
                         }
                     }
 
-                    string finalHash = BitConverter.ToString(combinedHash).Replace("-", "").ToLower();
-
-                    // 🛑 DEVELOPER ONLY: Prints your Master Hash to the app log so you can copy it
-                    // PostLogEvent($"DEVELOPER MASTER HASH: {finalHash}", System.Windows.Media.Colors.Cyan, false);
-
-                    return finalHash;
+                    return BitConverter.ToString(combinedHash).Replace("-", "").ToLower();
                 }
             }
             catch (Exception ex)
@@ -209,17 +197,14 @@ namespace PurityCompanion
 
                         if (latestVersion != CurrentAppVersion)
                         {
-                            // 1. Log it in the UI
                             PostLogEvent($"UPDATE REQUIRED: Version {latestVersion} is available! You are running v{CurrentAppVersion}.", System.Windows.Media.Colors.Cyan);
 
-                            // 2. Pop up a warning box for the user
                             var result = System.Windows.MessageBox.Show(
                                 $"A critical update for the Purity Companion (v{latestVersion}) is required to stay on the leaderboard.\n\nWould you like to open the download page now?",
                                 "Companion Update Required",
                                 MessageBoxButton.YesNo,
                                 MessageBoxImage.Warning);
 
-                            // 3. Take them to the website if they click Yes
                             if (result == MessageBoxResult.Yes)
                             {
                                 Process.Start(new ProcessStartInfo { FileName = downloadUrl, UseShellExecute = true });
@@ -352,7 +337,6 @@ namespace PurityCompanion
         {
             await CheckForUpdates();
 
-            // --- FIXED: ROUTED UNBOUND STARTER SEQUENCES TO WINDOW_LOADED CONTEXT ---
             string defaultCPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
 
             if (string.IsNullOrEmpty(CustomWowPath))
@@ -428,6 +412,9 @@ namespace PurityCompanion
 
                     if (charName == "Account" || charName == "SavedVariables") continue;
 
+                    // REALM INTEGRATION: Navigate out to extract the localized Realm Directory name
+                    string realmName = charFolder?.Parent?.Name ?? "UnknownRealm";
+
                     Match guidMatch = Regex.Match(fileContent, @"\[\s*[""']playerGUID[""']\s*\]\s*=\s*[""']([^""']+)[""']");
                     Match timeMatch = Regex.Match(fileContent, @"\[\s*[""']totalPlayedTime[""']\s*\]\s*=\s*([0-9.]+)");
                     Match levelMatch = Regex.Match(fileContent, @"\[\s*[""']currentLevel[""']\s*\]\s*=\s*([0-9]+)");
@@ -439,10 +426,12 @@ namespace PurityCompanion
                         int currentLevel = levelMatch.Success ? int.Parse(levelMatch.Groups[1].Value) : 1;
                         string challengeType = titleMatch.Success ? titleMatch.Groups[1].Value : "Unknown Challenge";
 
+                        // CHANGED: Appended "realm_name" property safely to your telemetry JSON stream
                         var payload = new
                         {
                             battletag = VerifiedBattleTag,
                             character_name = charName,
+                            realm_name = realmName,
                             player_guid = guidMatch.Groups[1].Value,
                             sequence_id = sequenceId,
                             total_played = totalPlayed,
@@ -461,7 +450,7 @@ namespace PurityCompanion
                         {
                             if (isWowRunning)
                             {
-                                PostLogEvent($"Active Telemetry Synced: {charName} (Seq: {sequenceId})", System.Windows.Media.Colors.SpringGreen, false);
+                                PostLogEvent($"Active Telemetry Synced: {charName} ({realmName}) [Seq: {sequenceId}]", System.Windows.Media.Colors.SpringGreen, false);
                             }
                         }
                         else if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -621,7 +610,8 @@ namespace PurityCompanion
                     return;
                 }
 
-                string scanResult = await ScanAndUploadPendingRun(fileContent);
+                // CHANGED: Passed realmName variable directly into the leaderboard scan module
+                string scanResult = await ScanAndUploadPendingRun(fileContent, realmName);
 
                 if (scanResult == "success")
                 {
@@ -639,7 +629,8 @@ namespace PurityCompanion
         }
 
         // --- 6. SECURE TRANSMISSION ROUTINES ---
-        private async Task<string> ScanAndUploadPendingRun(string fileContent)
+        // CHANGED: Added `string realmName` dependency requirement to signature block configuration
+        private async Task<string> ScanAndUploadPendingRun(string fileContent, string realmName)
         {
             try
             {
@@ -647,7 +638,16 @@ namespace PurityCompanion
                 if (match.Success)
                 {
                     string verificationString = match.Groups[1].Value;
-                    var payload = new { verification_string = verificationString, battletag = VerifiedBattleTag ?? "UnknownUser", opt_out_name = false, source = "app" };
+
+                    // CHANGED: Included "realm_name" parameters safely inside the verification POST body
+                    var payload = new
+                    {
+                        verification_string = verificationString,
+                        battletag = VerifiedBattleTag ?? "UnknownUser",
+                        realm_name = realmName,
+                        opt_out_name = false,
+                        source = "app"
+                    };
 
                     var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
                     HttpResponseMessage response = await httpClient.PostAsync($"{PythonServerUrl}/verify", content);
@@ -706,7 +706,6 @@ namespace PurityCompanion
                 AutomateSyncButton.Content = "Scanning & Syncing...";
                 AutomateSyncButton.IsEnabled = false;
 
-                // Syntax Error Condition Fixed:
                 if (string.IsNullOrEmpty(CustomWowPath) || !Directory.Exists(CustomWowPath))
                 {
                     System.Windows.MessageBox.Show("Could not automatically locate World of Warcraft.", "Auto-Discovery Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -734,16 +733,30 @@ namespace PurityCompanion
                     string[] charFiles = Directory.GetFiles(accountFolder, "Purity.lua", SearchOption.AllDirectories);
                     foreach (string charVarsOriginal in charFiles)
                     {
-                        for (int i = 0; i < 5; i++) { try { string content = File.ReadAllText(charVarsOriginal); await ScanAndUploadPendingRun(content); break; } catch { await Task.Delay(100); } }
+                        // FIXED: Extraction coordinates moved to the absolute top of the loop block 
+                        // so realmName variable properties are loaded BEFORE calling the pending upload scan
+                        string[] pathParts = charVarsOriginal.Split(Path.DirectorySeparatorChar);
+                        string charName = pathParts.Length >= 3 ? pathParts[pathParts.Length - 3] : "UnknownChar";
+                        string realmName = pathParts.Length >= 4 ? pathParts[pathParts.Length - 4] : "UnknownRealm";
+
+                        for (int i = 0; i < 5; i++)
+                        {
+                            try
+                            {
+                                string content = File.ReadAllText(charVarsOriginal);
+                                // CHANGED: Linked the dynamic realm variable safely to scan call parameters
+                                await ScanAndUploadPendingRun(content, realmName);
+                                break;
+                            }
+                            catch { await Task.Delay(100); }
+                        }
 
                         if (IsSymbolicLink(charVarsOriginal)) continue;
 
                         if (!Directory.Exists(cloudFolder)) Directory.CreateDirectory(cloudFolder);
-                        string[] pathParts = charVarsOriginal.Split(Path.DirectorySeparatorChar);
-                        string charName = pathParts.Length >= 3 ? pathParts[pathParts.Length - 3] : "UnknownChar";
-                        string realmName = pathParts.Length >= 4 ? pathParts[pathParts.Length - 4].Replace(" ", "") : "UnknownRealm";
+                        string cleanCloudRealm = realmName.Replace(" ", "");
 
-                        string charVarsCloud = Path.Combine(cloudFolder, $"Purity_{accountName}_{realmName}_{charName}.lua");
+                        string charVarsCloud = Path.Combine(cloudFolder, $"Purity_{accountName}_{cleanCloudRealm}_{charName}.lua");
                         if (!File.Exists(charVarsCloud)) File.Copy(charVarsOriginal, charVarsCloud);
                         CreateSymlinkAsAdmin(charVarsOriginal, charVarsCloud);
                     }
