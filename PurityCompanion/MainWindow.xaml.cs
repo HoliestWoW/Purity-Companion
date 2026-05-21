@@ -10,9 +10,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
-using System.Linq; // Added for sorting addon files cleanly
-
-using Application = System.Windows.Application;
+using System.Linq;
 
 namespace PurityCompanion
 {
@@ -24,9 +22,13 @@ namespace PurityCompanion
 
         private string? CurrentSessionId;
         private string? VerifiedBattleTag;
+
+        // Timers properly declared inside the class
         private DispatcherTimer? PollingTimer;
         private DispatcherTimer? statusClearTimer;
         private DispatcherTimer? heartbeatTimer;
+        private DispatcherTimer? updatePollingTimer;
+
         private static readonly HttpClient httpClient = new HttpClient();
 
         private System.Windows.Forms.NotifyIcon? trayIcon;
@@ -46,27 +48,23 @@ namespace PurityCompanion
 
         private string? ResolveWowAccountPath(string selectedPath)
         {
-            // Case 1: They literally clicked the "Account" folder
             if (selectedPath.EndsWith("Account", StringComparison.OrdinalIgnoreCase))
             {
                 if (Directory.Exists(selectedPath)) return selectedPath;
             }
 
-            // Case 2: They clicked the "WTF" folder
             if (selectedPath.EndsWith("WTF", StringComparison.OrdinalIgnoreCase))
             {
                 string testPath = Path.Combine(selectedPath, "Account");
                 if (Directory.Exists(testPath)) return testPath;
             }
 
-            // Case 3: They clicked the "_classic_era_" folder
             if (selectedPath.EndsWith("_classic_era_", StringComparison.OrdinalIgnoreCase))
             {
                 string testPath = Path.Combine(selectedPath, "WTF", "Account");
                 if (Directory.Exists(testPath)) return testPath;
             }
 
-            // Case 4: They clicked the base "World of Warcraft" folder
             if (selectedPath.EndsWith("World of Warcraft", StringComparison.OrdinalIgnoreCase) ||
                 selectedPath.EndsWith("WoW", StringComparison.OrdinalIgnoreCase))
             {
@@ -74,7 +72,6 @@ namespace PurityCompanion
                 if (Directory.Exists(testPath)) return testPath;
             }
 
-            // Case 5: Catch-all fallback
             string fallbackPath = Path.Combine(selectedPath, "_classic_era_", "WTF", "Account");
             if (Directory.Exists(fallbackPath)) return fallbackPath;
 
@@ -83,7 +80,7 @@ namespace PurityCompanion
 
         private void PromptForWowFolder(string popupMessage = "WoW not found on C:\\ drive. Please select your World of Warcraft folder.")
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            System.Windows.Application.Current.Dispatcher.Invoke(() =>
             {
                 using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
                 {
@@ -123,7 +120,7 @@ namespace PurityCompanion
         // --- 1. PREMIUM LOGGING ENGINE ---
         private void PostLogEvent(string description, System.Windows.Media.Color displayColor, bool useNotificationBanner = true)
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            System.Windows.Application.Current.Dispatcher.Invoke(() =>
             {
                 string timestamp = DateTime.Now.ToString("HH:mm:ss");
                 LogHistoryText.AppendText($"[{timestamp}] {description}\r\n");
@@ -182,7 +179,7 @@ namespace PurityCompanion
             }
         }
 
-        private async Task CheckForUpdates()
+        private async Task CheckForUpdates(bool isBackgroundCheck = false)
         {
             try
             {
@@ -193,33 +190,86 @@ namespace PurityCompanion
                     using (JsonDocument doc = JsonDocument.Parse(jsonResult))
                     {
                         string latestVersion = doc.RootElement.GetProperty("latest_version").GetString() ?? CurrentAppVersion;
-                        string downloadUrl = doc.RootElement.GetProperty("download_url").GetString() ?? "https://purity.pythonanywhere.com";
+                        string downloadUrl = doc.RootElement.GetProperty("download_url").GetString() ?? "";
 
-                        if (latestVersion != CurrentAppVersion)
+                        if (latestVersion != CurrentAppVersion && !string.IsNullOrEmpty(downloadUrl))
                         {
-                            PostLogEvent($"UPDATE REQUIRED: Version {latestVersion} is available! You are running v{CurrentAppVersion}.", System.Windows.Media.Colors.Cyan);
+                            PostLogEvent($"UPDATE REQUIRED: Version {latestVersion} is available!", System.Windows.Media.Colors.Cyan);
 
-                            var result = System.Windows.MessageBox.Show(
-                                $"A critical update for the Purity Companion (v{latestVersion}) is required to stay on the leaderboard.\n\nWould you like to open the download page now?",
-                                "Companion Update Required",
-                                MessageBoxButton.YesNo,
-                                MessageBoxImage.Warning);
-
-                            if (result == MessageBoxResult.Yes)
+                            if (isBackgroundCheck && this.Visibility != Visibility.Visible)
                             {
-                                Process.Start(new ProcessStartInfo { FileName = downloadUrl, UseShellExecute = true });
+                                if (showNotifications)
+                                    trayIcon?.ShowBalloonTip(10000, "Update Available", $"Version {latestVersion} is ready. Open the app to install it.", System.Windows.Forms.ToolTipIcon.Info);
                             }
-                        }
-                        else
-                        {
-                            PostLogEvent($"Version Check: App is up to date (v{CurrentAppVersion}).", System.Windows.Media.Colors.Gray, false);
+                            else
+                            {
+                                var result = System.Windows.MessageBox.Show(
+                                    $"Version {latestVersion} is available! Would you like to download and restart the app automatically now?",
+                                    "Update Available",
+                                    MessageBoxButton.YesNo,
+                                    MessageBoxImage.Information);
+
+                                if (result == MessageBoxResult.Yes)
+                                {
+                                    await DownloadAndInstallUpdate(downloadUrl);
+                                }
+                            }
                         }
                     }
                 }
             }
+            catch (Exception ex) { Debug.WriteLine("Update check failed: " + ex.Message); }
+        }
+
+        private async Task DownloadAndInstallUpdate(string directExeUrl)
+        {
+            try
+            {
+                PostLogEvent("Downloading new version... Please wait.", System.Windows.Media.Colors.Yellow);
+                VerifyButton.IsEnabled = false;
+
+                // 1. Download the new .exe to a temporary file
+                byte[] fileBytes = await httpClient.GetByteArrayAsync(directExeUrl);
+                string currentExePath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+                string updateExePath = currentExePath + ".update";
+
+                File.WriteAllBytes(updateExePath, fileBytes);
+
+                // 2. Create the invisible batch script
+                string batPath = Path.Combine(Path.GetDirectoryName(currentExePath) ?? "", "updater.bat");
+                string exeName = Path.GetFileName(currentExePath);
+                string updateExeName = Path.GetFileName(updateExePath);
+
+                string[] batScript =
+                {
+                    "@echo off",
+                    "timeout /t 2 /nobreak > NUL",
+                    $"del \"{exeName}\"",
+                    $"move /y \"{updateExeName}\" \"{exeName}\"",
+                    $"start \"\" \"{exeName}\"",
+                    "del \"%~f0\""
+                };
+                File.WriteAllLines(batPath, batScript);
+
+                // 3. Launch the batch script silently
+                ProcessStartInfo startInfo = new ProcessStartInfo
+                {
+                    FileName = batPath,
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                Process.Start(startInfo);
+
+                // 4. Kill the current app
+                if (wowWatcher != null) wowWatcher.Dispose();
+                trayIcon?.Dispose();
+                System.Windows.Application.Current.Shutdown();
+            }
             catch (Exception ex)
             {
-                Debug.WriteLine("Update check failed: " + ex.Message);
+                PostLogEvent($"Auto-Update Failed: {ex.Message}", System.Windows.Media.Colors.Red);
+                VerifyButton.IsEnabled = true;
             }
         }
 
@@ -245,7 +295,7 @@ namespace PurityCompanion
 
             try
             {
-                var iconStream = Application.GetResourceStream(new Uri("pack://application:,,,/PurityCompanion;component/PurityIcon.ico")).Stream;
+                var iconStream = System.Windows.Application.GetResourceStream(new Uri("pack://application:,,,/PurityCompanion;component/PurityIcon.ico")).Stream;
                 trayIcon.Icon = new System.Drawing.Icon(iconStream);
             }
             catch (Exception ex)
@@ -263,7 +313,7 @@ namespace PurityCompanion
             trayIcon.ContextMenuStrip.Items.Add("Exit Product", null, (s, args) => {
                 if (wowWatcher != null) wowWatcher.Dispose();
                 trayIcon.Dispose();
-                Application.Current.Shutdown();
+                System.Windows.Application.Current.Shutdown();
             });
         }
 
@@ -335,7 +385,11 @@ namespace PurityCompanion
         // --- 3. PERSISTENT LOGIN & STARTUP ---
         private async void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            await CheckForUpdates();
+            await CheckForUpdates(isBackgroundCheck: false);
+
+            updatePollingTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(1) };
+            updatePollingTimer.Tick += async (s, args) => await CheckForUpdates(isBackgroundCheck: true);
+            updatePollingTimer.Start();
 
             string defaultCPath = @"C:\Program Files (x86)\World of Warcraft\_classic_era_\WTF\Account";
 
@@ -412,7 +466,6 @@ namespace PurityCompanion
 
                     if (charName == "Account" || charName == "SavedVariables") continue;
 
-                    // REALM INTEGRATION: Navigate out to extract the localized Realm Directory name
                     string realmName = charFolder?.Parent?.Name ?? "UnknownRealm";
 
                     Match guidMatch = Regex.Match(fileContent, @"\[\s*[""']playerGUID[""']\s*\]\s*=\s*[""']([^""']+)[""']");
@@ -426,7 +479,6 @@ namespace PurityCompanion
                         int currentLevel = levelMatch.Success ? int.Parse(levelMatch.Groups[1].Value) : 1;
                         string challengeType = titleMatch.Success ? titleMatch.Groups[1].Value : "Unknown Challenge";
 
-                        // CHANGED: Appended "realm_name" property safely to your telemetry JSON stream
                         var payload = new
                         {
                             battletag = VerifiedBattleTag,
@@ -567,6 +619,8 @@ namespace PurityCompanion
 
             AutomateSyncButton.Content = "Sync Active & Monitoring";
             PostLogEvent("IO Surveillance Engine online. Listening for local World of Warcraft transaction signatures...", System.Windows.Media.Colors.LimeGreen);
+            // string devHash = GetAddonIntegrityHash();
+            // PostLogEvent($"[DEV] Current Addon Integrity Hash: {devHash}", System.Windows.Media.Colors.Cyan, false);
         }
 
         private void OnWowFileChanged(object sender, FileSystemEventArgs e)
@@ -579,7 +633,7 @@ namespace PurityCompanion
             lastEventPath = e.FullPath;
             lastEventTime = DateTime.Now;
 
-            Application.Current.Dispatcher.Invoke(async () =>
+            System.Windows.Application.Current.Dispatcher.Invoke(async () =>
             {
                 string[] pathParts = e.FullPath.Split(Path.DirectorySeparatorChar);
                 string charName = pathParts.Length >= 3 ? pathParts[pathParts.Length - 3] : "Unknown";
@@ -610,7 +664,6 @@ namespace PurityCompanion
                     return;
                 }
 
-                // CHANGED: Passed realmName variable directly into the leaderboard scan module
                 string scanResult = await ScanAndUploadPendingRun(fileContent, realmName);
 
                 if (scanResult == "success")
@@ -629,7 +682,6 @@ namespace PurityCompanion
         }
 
         // --- 6. SECURE TRANSMISSION ROUTINES ---
-        // CHANGED: Added `string realmName` dependency requirement to signature block configuration
         private async Task<string> ScanAndUploadPendingRun(string fileContent, string realmName)
         {
             try
@@ -639,7 +691,6 @@ namespace PurityCompanion
                 {
                     string verificationString = match.Groups[1].Value;
 
-                    // CHANGED: Included "realm_name" parameters safely inside the verification POST body
                     var payload = new
                     {
                         verification_string = verificationString,
@@ -733,8 +784,6 @@ namespace PurityCompanion
                     string[] charFiles = Directory.GetFiles(accountFolder, "Purity.lua", SearchOption.AllDirectories);
                     foreach (string charVarsOriginal in charFiles)
                     {
-                        // FIXED: Extraction coordinates moved to the absolute top of the loop block 
-                        // so realmName variable properties are loaded BEFORE calling the pending upload scan
                         string[] pathParts = charVarsOriginal.Split(Path.DirectorySeparatorChar);
                         string charName = pathParts.Length >= 3 ? pathParts[pathParts.Length - 3] : "UnknownChar";
                         string realmName = pathParts.Length >= 4 ? pathParts[pathParts.Length - 4] : "UnknownRealm";
@@ -744,7 +793,6 @@ namespace PurityCompanion
                             try
                             {
                                 string content = File.ReadAllText(charVarsOriginal);
-                                // CHANGED: Linked the dynamic realm variable safely to scan call parameters
                                 await ScanAndUploadPendingRun(content, realmName);
                                 break;
                             }
