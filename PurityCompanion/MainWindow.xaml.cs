@@ -18,7 +18,7 @@ namespace PurityCompanion
     {
         private readonly string ClientId = "c045bac65c9f45f19d3d65e62c0b1b4f";
         private readonly string PythonServerUrl = "https://purity.pythonanywhere.com";
-        private readonly string CurrentAppVersion = "1.1.4";
+        private readonly string CurrentAppVersion = "1.2.0";
 
         private string? CurrentSessionId;
         private string? VerifiedBattleTag;
